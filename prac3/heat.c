@@ -71,8 +71,8 @@ static void sliced_steps(unsigned int source_x, unsigned int source_y, const flo
 	
 	unsigned int upper_bound = slice * slice_ind;
 	unsigned int lower_bound = slice * (slice_ind + 1);
-	if (upper_bound > N) {
-		upperbound = N;
+	if (lower_bound > N) {
+		lower_bound = N;
 	}
 
 	unsigned int pre_ind;
@@ -89,28 +89,43 @@ static void sliced_steps(unsigned int source_x, unsigned int source_y, const flo
 		nxt_ind = slice_ind + 1;
 	}
 
-	for (int ind = 0; ind < N, ind++){
+	for (int ind = 0; ind < N; ind++){
 		top_row[ind] = current[idx(ind, slice_ind, N)];
 		bottom_row[ind] = current[idx(ind, upper_bound, N)];
 	}
 	
-	MPI_Send(top_row, N, MPI_FLOAT, pre_ind, 0, MPI_COMM_WORLD);  // tag 0 for the top row
-	MPI_Send(botom_row, N, MPI_FLOAT, nxt_ind, 1, MPI_COMM_WORLD);  // tag 1 for the bottom row
+	MPI_Isend(top_row, N, MPI_FLOAT, pre_ind, 0, MPI_COMM_WORLD);  // tag 0 for the top row
+	MPI_Isend(bottom_row, N, MPI_FLOAT, nxt_ind, 1, MPI_COMM_WORLD);  // tag 1 for the bottom row
 	
-	MPI_Recv(top_row, N, MPI_FLOAT, pre_ind, 0, MPI_COMM_WORLD);  // tag 0 for the top row
-	MPI_Recv(botom_row, N, MPI_FLOAT, nxt_ind, 1, MPI_COMM_WORLD);  // tag 1 for the bottom row
+	MPI_Irecv(top_row, N, MPI_FLOAT, pre_ind, 0, MPI_COMM_WORLD);  // tag 0 for the top row
+	MPI_Irecv(bottom_row, N, MPI_FLOAT, nxt_ind, 1, MPI_COMM_WORLD);  // tag 1 for the bottom row
 
-	for (unsigned int y = lower_bound; y < upper_bound; ++y) {
+	size_t aux_array_size = (slice + 2) * N * sizeof(float);  // create the new local matrix with ghost rows
+	float * aux_matrix = malloc(aux_array_size);
+	unsigned int difference = lower_bound - upper_bound;
+	for (unsigned int i = 0; i < N; i++) {
+		aux_matrix[idx(i, 0, N)] = top_row[i];
+		aux_matrix[idx(i, slice + 1, N)] = bottom_row[i];
+		for (unsigned int j = 0; j < difference; j++) {
+			aux_matrix[idx(i, j + 1, N)] = current[idx(i, upper_bound + j, N)];
+		}
+	}
+
+	for (unsigned int y = 0; y < slice; ++y) {
 		for (unsigned int x = 1; x < N-1; ++x) {
 			if ((y == source_y) && (x == source_x)) {
 				continue;
 			}
-			next[idx(x, y, N)] = (current[idx(x, y-1, N)] +
-			current[idx(x-1, y, N)] +
-			current[idx(x+1, y, N)] +
-			current[idx(x, y+1, N)]) / 4.0f;
+			next[idx(x, slice * slice_ind + y, N)] = (aux_matrix[idx(x, y-1, N)] +
+			aux_matrix[idx(x-1, y, N)] +
+			aux_matrix[idx(x+1, y, N)] +
+			aux_matrix[idx(x, y+1, N)]) / 4.0f;
 		}
 	}
+
+	free(top_row);
+    free(bottom_row);
+    free(aux_matrix);
 
 }
 
@@ -122,6 +137,26 @@ static float diff(const float * current, const float * next) {
 			maxdiff = fmaxf(maxdiff, fabsf(next[idx(x, y, N)] - current[idx(x, y, N)]));
 		}
 	}
+	return maxdiff;
+}
+
+
+static float sliced_diff(const float * current, const float * next, unsigned int slice, unsigned int slice_ind) {
+
+	float maxdiff = 0.0f;
+
+	unsigned int upper_bound = slice * slice_ind;
+	unsigned int lower_bound = slice * (slice_ind + 1);
+	if (lower_bound > N) {
+		lower_bound = N;
+	}
+
+	for (unsigned int y = upper_bound + 1; y < lower_bound - 1; ++y) {
+		for (unsigned int x = 1; x < N-1; ++x) {
+			maxdiff = fmaxf(maxdiff, fabsf(next[idx(x, y, N)] - current[idx(x, y, N)]));
+		}
+	}
+
 	return maxdiff;
 }
 
@@ -164,13 +199,45 @@ int main() {
 
 	double start = omp_get_wtime();
 
+	int num_per_slice = N / 4;
+
+	float global_diff;
+
 	float t_diff = SOURCE_TEMP;
 	for (unsigned int it = 0; (it < MAX_ITERATIONS) && (t_diff > MIN_DELTA); ++it) {
+		/*
 		step(source_x, source_y, current, next);
+
 		t_diff = diff(current, next);
 		if(it%(MAX_ITERATIONS/10)==0){
 			printf("%u: %f\n", it, t_diff);
 		}
+		*/
+
+		/********below*********/
+		int ind[num_per_slice];
+		float t_diff_ind[num_per_slice];
+
+		float sum_diff;
+
+		for (int i = 0; i < num_per_slice; i++) {
+			ind[i] = (N / num_per_slice) * i;   // integer division
+			sliced_steps(source_x, source_y, current, next, num_per_slice, i);
+			/*
+			t_diff = sliced_diff(current, next, num_per_slice, i);
+		    if(it%(MAX_ITERATIONS/10)==0){
+	    		printf("%u: %f\n", it, t_diff);
+		    }
+
+			MPI_Reduce(&t_diff, &sum_diff, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
+		    */
+		}
+
+		float local_diff = diff(current, next);
+
+		MPI_Allreduce(&local_diff, &global_diff, 1, MPI_FLOAT, MPI_MAX, MPI_COMM_WORLD);
+
+		/********above*********/
 
 		float * swap = current;
 		current = next;
@@ -178,11 +245,28 @@ int main() {
 	}
 	double stop = omp_get_wtime();
 	printf("Computing time %f s.\n", stop-start);
+/*
+	float *next_global = malloc(N * N * sizeof(float));
 
-	write_png(current, MAX_ITERATIONS);
+	int counts[N];
+	int displs[N];
 
+	for (int r = 0; r < num_ranks; r++) {
+		counts[r] = rows_of_rank[r] * N;
+		displs[r] = starting_row[r] * N;
+	}
+
+	MPI_Gatherv(next_local, rows_local*N, MPI_FLOAT,
+				next_global, counts, displs, MPI_FLOAT,
+				0, MPI_COMM_WORLD);
+
+
+
+	write_png(next_global, MAX_ITERATIONS);
+*/
 	free(current);
 	free(next);
+//	free(next_global);
 
 	return 0;
 }
