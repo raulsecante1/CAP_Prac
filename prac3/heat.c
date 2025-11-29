@@ -46,6 +46,32 @@ static void init(unsigned int source_x, unsigned int source_y, float * matrix) {
 }
 
 
+static void sliced_init(unsigned int source_x, unsigned int source_y, float* matrix, unsigned int slice, unsigned int slice_ind) {
+	// init
+	unsigned int upper_bound = slice * slice_ind;
+	unsigned int lower_bound = slice * (slice_ind + 1);
+	if (lower_bound > N) {
+		lower_bound = N;
+	}
+
+	unsigned int difference = lower_bound - upper_bound;
+	memset(matrix, 0, difference * N * sizeof(float));
+
+	// place source
+	matrix[idx(source_x, source_y, N)] = SOURCE_TEMP;
+
+	// fill borders
+	for (unsigned int x = 0; x < N; ++x) {
+		matrix[idx(x, 0, N)] = BOUNDARY_TEMP;
+		matrix[idx(x, N - 1, N)] = BOUNDARY_TEMP;
+	}
+	for (unsigned int y = 0; y < difference; ++y) {
+		matrix[idx(0, y, N)] = BOUNDARY_TEMP;
+		matrix[idx(N - 1, y, N)] = BOUNDARY_TEMP;
+	}
+}
+
+
 static void step(unsigned int source_x, unsigned int source_y, const float * current, float * next) {
 
 	for (unsigned int y = 1; y < N-1; ++y) {
@@ -61,8 +87,8 @@ static void step(unsigned int source_x, unsigned int source_y, const float * cur
 	}
 }
 
-
-static void sliced_steps(unsigned int source_x, unsigned int source_y, const float * current, float * next, unsigned int slice, unsigned int slice_ind) {
+/*
+static void group_sliced_steps(unsigned int source_x, unsigned int source_y, const float * current, float * next, unsigned int slice, unsigned int slice_ind) {
 
 	float *top_row = (float*)malloc(2*N*sizeof(float));
 	float *bottom_row = (float*)malloc(2*N*sizeof(float));
@@ -97,8 +123,8 @@ static void sliced_steps(unsigned int source_x, unsigned int source_y, const flo
 	MPI_Isend(top_row, N, MPI_FLOAT, pre_ind, 0, MPI_COMM_WORLD);  // tag 0 for the top row
 	MPI_Isend(bottom_row, N, MPI_FLOAT, nxt_ind, 1, MPI_COMM_WORLD);  // tag 1 for the bottom row
 	
-	MPI_Irecv(top_row, N, MPI_FLOAT, pre_ind, 0, MPI_COMM_WORLD);  // tag 0 for the top row
-	MPI_Irecv(bottom_row, N, MPI_FLOAT, nxt_ind, 1, MPI_COMM_WORLD);  // tag 1 for the bottom row
+	MPI_Recv(top_row, N, MPI_FLOAT, pre_ind, 0, MPI_COMM_WORLD);  // tag 0 for the top row
+	MPI_Recv(bottom_row, N, MPI_FLOAT, nxt_ind, 1, MPI_COMM_WORLD);  // tag 1 for the bottom row
 
 	size_t aux_array_size = (slice + 2) * N * sizeof(float);  // create the new local matrix with ghost rows
 	float * aux_matrix = malloc(aux_array_size);
@@ -128,6 +154,77 @@ static void sliced_steps(unsigned int source_x, unsigned int source_y, const flo
     free(aux_matrix);
 
 }
+*/
+
+static void sliced_steps(unsigned int source_x, unsigned int source_y, const float* current, float* next, unsigned int slice, unsigned int slice_ind) {
+
+	float* top_row = (float*)malloc(2 * N * sizeof(float));
+	float* bottom_row = (float*)malloc(2 * N * sizeof(float));
+
+	//float *buffer_recv = (float*)malloc(2*N*sizeof(float));
+
+	unsigned int upper_bound = slice * slice_ind;
+	unsigned int lower_bound = slice * (slice_ind + 1);
+	if (lower_bound > N) {
+		lower_bound = N;
+	}
+
+	unsigned int pre_ind;
+	unsigned int nxt_ind;
+	if (slice_ind == 0) {
+		pre_ind = (N + slice - 1) / slice - 1;
+	}
+	else {
+		pre_ind = slice_ind - 1;
+	}
+
+	if (slice_ind == (N + slice - 1) / slice - 1) {
+		nxt_ind = 0;
+	}
+	else {
+		nxt_ind = slice_ind + 1;
+	}
+
+	for (int ind = 0; ind < N; ind++) {
+		top_row[ind] = current[idx(ind, slice_ind, N)];
+		bottom_row[ind] = current[idx(ind, upper_bound, N)];
+	}
+
+	MPI_Isend(top_row, N, MPI_FLOAT, pre_ind, 0, MPI_COMM_WORLD);  // tag 0 for the top row
+	MPI_Isend(bottom_row, N, MPI_FLOAT, nxt_ind, 1, MPI_COMM_WORLD);  // tag 1 for the bottom row
+
+	MPI_Recv(top_row, N, MPI_FLOAT, pre_ind, 0, MPI_COMM_WORLD);  // tag 0 for the top row
+	MPI_Recv(bottom_row, N, MPI_FLOAT, nxt_ind, 1, MPI_COMM_WORLD);  // tag 1 for the bottom row
+
+	size_t aux_array_size = (slice + 2) * N * sizeof(float);  // create the new local matrix with ghost rows
+	float* aux_matrix = malloc(aux_array_size);
+	unsigned int difference = lower_bound - upper_bound;
+	for (unsigned int i = 0; i < N; i++) {
+		aux_matrix[idx(i, 0, N)] = top_row[i];
+		aux_matrix[idx(i, slice + 1, N)] = bottom_row[i];
+		for (unsigned int j = 0; j < difference; j++) {
+			aux_matrix[idx(i, j + 1, N)] = current[idx(i, upper_bound + j, N)];
+		}
+	}
+
+	for (unsigned int y = 0; y < slice; ++y) {
+		for (unsigned int x = 1; x < N - 1; ++x) {
+			if ((y == source_y) && (x == source_x)) {
+				continue;
+			}
+			next[idx(x, slice * slice_ind + y, N)] = (aux_matrix[idx(x, y - 1, N)] +
+				aux_matrix[idx(x - 1, y, N)] +
+				aux_matrix[idx(x + 1, y, N)] +
+				aux_matrix[idx(x, y + 1, N)]) / 4.0f;
+		}
+	}
+
+	free(top_row);
+	free(bottom_row);
+	free(aux_matrix);
+
+}
+
 
 
 static float diff(const float * current, const float * next) {
@@ -182,28 +279,44 @@ void write_png(float * current, int iter) {
 int main() {
 	size_t array_size = N * N * sizeof(float);
 
-	float * current = malloc(array_size);
-	float * next = malloc(array_size);
+	//float * current = malloc(array_size);
+	//float * next = malloc(array_size);
+
+	float* global_current = malloc(array_size);
 
 	srand(0);
 	unsigned int source_x = rand() % (N-2) + 1;
 	unsigned int source_y = rand() % (N-2) + 1;
 	printf("Heat source at (%u, %u)\n", source_x, source_y);
 
-	MPI_Init (&argc, &argv);
+	float t_diff = SOURCE_TEMP;
+
+	MPI_Init ();
+
+	int rank, size;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-	init(source_x, source_y, current);
+	int num_per_slice = N / size;
+
+	size_t slice_size;
+
+	if (num_per_slice * (rank + 1) < N) {
+		slice_size = num_per_slice * N * sizeof(float);
+	}
+	else {
+		slice_size = (N-num_per_slice*rank) * N * sizeof(float);
+	}
+
+	float* current = malloc(slice_size);
+	float* next = malloc(slice_size);
+
+	sliced_init(source_x, source_y, current, num_per_slice, rank);
 	memcpy(next, current, array_size);
 
 	double start = omp_get_wtime();
 
-	int num_per_slice = N / 4;
-
-	float global_diff;
-
-	float t_diff = SOURCE_TEMP;
+	float sliced_t_diff = SOURCE_TEMP;
 	for (unsigned int it = 0; (it < MAX_ITERATIONS) && (t_diff > MIN_DELTA); ++it) {
 		/*
 		step(source_x, source_y, current, next);
@@ -215,28 +328,14 @@ int main() {
 		*/
 
 		/********below*********/
-		int ind[num_per_slice];
-		float t_diff_ind[num_per_slice];
+		sliced_steps(source_x, source_y, current, next, num_per_slice, rank);
 
-		float sum_diff;
+		sliced_t_diff = sliced_diff(current, next, num_per_slice, rank);
 
-		for (int i = 0; i < num_per_slice; i++) {
-			ind[i] = (N / num_per_slice) * i;   // integer division
-			sliced_steps(source_x, source_y, current, next, num_per_slice, i);
-			/*
-			t_diff = sliced_diff(current, next, num_per_slice, i);
-		    if(it%(MAX_ITERATIONS/10)==0){
-	    		printf("%u: %f\n", it, t_diff);
-		    }
-
-			MPI_Reduce(&t_diff, &sum_diff, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
-		    */
+		MPI_Reduce(&sliced_t_diff, &t_diff, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
+		if (it % (MAX_ITERATIONS / 10) == 0) {
+			printf("%u: %f\n", it, t_diff);
 		}
-
-		float local_diff = diff(current, next);
-
-		MPI_Allreduce(&local_diff, &global_diff, 1, MPI_FLOAT, MPI_MAX, MPI_COMM_WORLD);
-
 		/********above*********/
 
 		float * swap = current;
@@ -245,28 +344,39 @@ int main() {
 	}
 	double stop = omp_get_wtime();
 	printf("Computing time %f s.\n", stop-start);
-/*
-	float *next_global = malloc(N * N * sizeof(float));
 
-	int counts[N];
-	int displs[N];
+	int* recvcounts = NULL;
+	int* displs = NULL;
 
-	for (int r = 0; r < num_ranks; r++) {
-		counts[r] = rows_of_rank[r] * N;
-		displs[r] = starting_row[r] * N;
+	if (rank == 0) {
+		recvcounts = malloc(size * sizeof(int));
+		displs = malloc(size * sizeof(int));
+
+		int offset = 0;
+
+		for (int i = 0; i < size; i++) {
+			if (num_per_slice * (i + 1) < N) {
+				recvcounts[i] = num_per_slice * N;
+			}
+			else {
+				recvcounts[i] = (N - num_per_slice * i) * N;
+			}
+			
+			displs[i] = offset;
+			offset += recvcounts[i];
+		}
 	}
 
-	MPI_Gatherv(next_local, rows_local*N, MPI_FLOAT,
-				next_global, counts, displs, MPI_FLOAT,
-				0, MPI_COMM_WORLD);
+	MPI_Gatherv(current, slice_size / sizeof(float), MPI_FLOAT, global_current, recvcounts, displs, MPI_FLOAT, 0, MPI_COMM_WORLD);
+	if (rank == 0) {
+		write_png(global_current, MAX_ITERATIONS);
+	}
 
-
-
-	write_png(next_global, MAX_ITERATIONS);
-*/
 	free(current);
 	free(next);
-//	free(next_global);
+	MPI_Finalize();
+
+	free(global_current);
 
 	return 0;
 }
