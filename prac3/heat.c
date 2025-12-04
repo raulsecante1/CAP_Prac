@@ -175,6 +175,7 @@ static void sliced_steps(unsigned int source_x, unsigned int source_y, const flo
 	float* bottom_row = (float*)malloc(N * sizeof(float));
 
 	MPI_Request reqs[4];
+	MPI_Status stats[4];
 
 	//float *buffer_recv = (float*)malloc(2*N*sizeof(float));
 
@@ -229,7 +230,7 @@ static void sliced_steps(unsigned int source_x, unsigned int source_y, const flo
 	MPI_Irecv(top_row, N, MPI_FLOAT, pre_ind, 0, MPI_COMM_WORLD, &reqs[2]);  // tag 0 for the top row
 	MPI_Irecv(bottom_row, N, MPI_FLOAT, nxt_ind, 1, MPI_COMM_WORLD, &reqs[3]);  // tag 1 for the bottom row
 
-	MPI_Waitall(4, reqs, MPI_STATUSES_IGNORE);
+	MPI_Waitall(4, reqs, stats);
 
 	if(debug) printf("no error at MPI comunication");
 
@@ -259,6 +260,8 @@ static void sliced_steps(unsigned int source_x, unsigned int source_y, const flo
 
 	free(top_row);
 	free(bottom_row);
+	free(top_row_send);
+	free(bottom_row_send);
 	free(aux_matrix);
 
 }
@@ -325,7 +328,6 @@ int main(int argc, char **argv) {
 	srand(0);
 	unsigned int source_x = rand() % (N-2) + 1;
 	unsigned int source_y = rand() % (N-2) + 1;
-	printf("Heat source at (%u, %u)\n", source_x, source_y);
 
 	float t_diff = SOURCE_TEMP;
 
@@ -334,6 +336,10 @@ int main(int argc, char **argv) {
 	int rank, size;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+	if (rank == 0) {
+		printf("Heat source at (%u, %u)\n", source_x, source_y);
+	}
 
 	int num_per_slice;
 	if (size == 1) {
