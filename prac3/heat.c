@@ -227,8 +227,8 @@ static void sliced_steps(unsigned int source_x, unsigned int source_y, const flo
 	MPI_Isend(top_row_send, N, MPI_FLOAT, pre_ind, 0, MPI_COMM_WORLD, &reqs[0]);  // tag 0 for the top row
 	MPI_Isend(bottom_row_send, N, MPI_FLOAT, nxt_ind, 1, MPI_COMM_WORLD, &reqs[1]);  // tag 1 for the bottom row
 
-	MPI_Irecv(top_row, N, MPI_FLOAT, pre_ind, 0, MPI_COMM_WORLD, &reqs[2]);  // tag 0 for the top row
-	MPI_Irecv(bottom_row, N, MPI_FLOAT, nxt_ind, 1, MPI_COMM_WORLD, &reqs[3]);  // tag 1 for the bottom row
+	MPI_Irecv(top_row, N, MPI_FLOAT, pre_ind, 1, MPI_COMM_WORLD, &reqs[2]);  // tag 0 for the top row
+	MPI_Irecv(bottom_row, N, MPI_FLOAT, nxt_ind, 0, MPI_COMM_WORLD, &reqs[3]);  // tag 1 for the bottom row
 
 	MPI_Waitall(4, reqs, stats);
 
@@ -239,8 +239,8 @@ static void sliced_steps(unsigned int source_x, unsigned int source_y, const flo
 
 	for (unsigned int i = 0; i < N; i++) {
 		aux_matrix[idx(i, 0, N)] = top_row[i];
-		aux_matrix[idx(i, difference + 1, N)] = bottom_row[i];
-		for (unsigned int j = 0; j < difference+1; j++) {
+		aux_matrix[idx(i, difference+1, N)] = bottom_row[i];
+		for (unsigned int j = 0; j < difference; j++) {
 			aux_matrix[idx(i, j + 1, N)] = current[idx(i, j, N)];
 		}
 	}
@@ -248,10 +248,10 @@ static void sliced_steps(unsigned int source_x, unsigned int source_y, const flo
 
 	for (unsigned int y = 1; y < difference+1; ++y) {
 		for (unsigned int x = 1; x < N - 1; ++x) {
-			if ((y+slice*slice_ind-1 == source_y) && (x == source_x)) {
+			if ((y+upper_bound-1 == source_y) && (x == source_x)) {
 				continue;
 			}
-			next[idx(x, y, N)] = (aux_matrix[idx(x, y - 1, N)] +
+			next[idx(x, y-1, N)] = (aux_matrix[idx(x, y - 1, N)] +
 				aux_matrix[idx(x - 1, y, N)] +
 				aux_matrix[idx(x + 1, y, N)] +
 				aux_matrix[idx(x, y + 1, N)]) / 4.0f;
@@ -289,7 +289,9 @@ static float sliced_diff(const float * current, const float * next, unsigned int
 		lower_bound = N;
 	}
 
-	for (unsigned int y = upper_bound + 1; y < lower_bound - 1; ++y) {
+	unsigned int difference = lower_bound - upper_bound;
+
+	for (unsigned int y = 1; y < difference - 1; ++y) {
 		for (unsigned int x = 1; x < N-1; ++x) {
 			maxdiff = fmaxf(maxdiff, fabsf(next[idx(x, y, N)] - current[idx(x, y, N)]));
 		}
@@ -386,7 +388,7 @@ int main(int argc, char **argv) {
 		printf("no error step");
 		sliced_t_diff = sliced_diff(current, next, num_per_slice, rank);
 		printf("no error diff");
-		MPI_Reduce(&sliced_t_diff, &t_diff, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
+		MPI_Allreduce(&sliced_t_diff, &t_diff, 1, MPI_FLOAT, MPI_MAX, MPI_COMM_WORLD);
 		if (it % (MAX_ITERATIONS / 10) == 0) {
 			printf("%u: %f\n", it, t_diff);
 		}
